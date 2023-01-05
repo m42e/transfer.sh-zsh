@@ -11,6 +11,13 @@ show_help(){
   echo "--encrypt/-e        encrypt using gpg and a generated password"
   echo "-q/-s               only print download url to stdout, "
   echo "                    use -qq/-ss to disable progress"
+  echo
+  echo "Environment:"
+  echo " - TRANSFER_BASE_URL     The baseurl of the transfer server, "
+  echo "                         default transfer.sh"
+  echo " - TRANSFER_TRANSFORMER  Default is cat, which is replaced by "
+  echo "                         a proper gpg call, if -r/-e/-p is "
+  echo "                         specified, default is cat"
 }
 
 transfer(){
@@ -34,7 +41,8 @@ transfer(){
     return 1
   fi
 
-  transformer="cat"
+  # Transformer is used to probably encrypt the content before uploading the file
+  transformer=${TRANSFER_TRANSFORMER:-"cat"}
   days=${days[-1]}
   dl=${dl[-1]}
   extra_headers=
@@ -62,6 +70,7 @@ transfer(){
       transformer="$transformer --recipient $rec"
     done
   elif [[ ${#password} -gt 0 || ${#secure} -gt 0 ]]; then
+    # If we do not have a password, lets generate one.
     if [[ "${#password}" -eq 0 ]]; then
       password=$(openssl rand -base64 24)
     else
