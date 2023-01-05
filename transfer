@@ -4,12 +4,13 @@ show_help(){
   echo
   echo "transfer [-t <n>] [-d <d>] [-p <s>|-e] <filename/folder>"
   echo
-  echo "--times/-t <n>    limit to n downloads"
-  echo "--days/-d <n>     limit to n days"
-  echo "--password/-p <s> encrypt using gpg and the specified password"
-  echo "--encrypt/-e      encrypt using gpg and a generated password"
-  echo "-q/-s             only print download url to stdout, "
-  echo "                  use -qq/-ss to disable progress"
+  echo "--times/-t <n>      limit to n downloads"
+  echo "--days/-d <n>       limit to n days"
+  echo "--recipient/-r <s> encrypt for recipient"
+  echo "--password/-p <s>   encrypt using gpg and the specified password"
+  echo "--encrypt/-e        encrypt using gpg and a generated password"
+  echo "-q/-s               only print download url to stdout, "
+  echo "                    use -qq/-ss to disable progress"
 }
 
 transfer(){
@@ -24,6 +25,7 @@ transfer(){
     q+=silent s+=silent \
     p:=password -password:=password \
     e=secure -encrypt=secure \
+    r+:=recipient -recipient+:=recipient \
     h=help -help=help \
     || return 1
 
@@ -53,7 +55,13 @@ transfer(){
   fi
 
   # Encryption
-  if [[ ${#password} -gt 0 || ${#secure} -gt 0 ]]; then
+  if [[ ${#recipient} -gt 0 ]]; then
+    transformer="gpg --batch --yes -o- --encrypt "
+    for ((i=2; i<=${#recipient[@]}; i+=2)); do
+      rec=${recipient[$i]}
+      transformer="$transformer --recipient $rec"
+    done
+  elif [[ ${#password} -gt 0 || ${#secure} -gt 0 ]]; then
     if [[ "${#password}" -eq 0 ]]; then
       password=$(openssl rand -base64 24)
     else
@@ -112,6 +120,14 @@ transfer(){
         echo "---------------------"
         echo "Password (gpg): ${password}"
         echo "Download (gpg): curl ${url/$base_url\//$base_url/get/} | gpg --batch --yes --decrypt --passphrase $password -o $file_name"
+        echo "---------------------"
+      fi
+      if [[ ${#recipient} -gt 0 ]]; then
+        echo "---------------------"
+        echo "Encrypted for: "
+        for ((i=2; i<=${#recipient[@]}; i+=2)); do
+          echo " - ${recipient[$i]}"
+        done
         echo "---------------------"
       fi
       echo "Delete URL:     $delete_url"
