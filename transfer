@@ -1,22 +1,28 @@
 #! /usr/bin/env zsh
 show_help(){
   echo "Usage of transfer"
+  echo
+  echo "transfer [-t <n>] [-d <d>] [-p <s>|-e] <filename/folder>"
+  echo
   echo "--times/-t <n>    limit to n downloads"
   echo "--days/-d <n>     limit to n days"
+  echo "--password/-p <s> encrypt using gpg and the specified password"
+  echo "--encrypt/-e      encrypt using gpg and a generated password"
   echo "-q/-s             only print download url to stdout, "
   echo "                  use -qq/-ss to disable progress"
 }
 transfer(){
-  local base_url headers extra_headers
-  base_url=https://transfer.sh
+  local base_url headers extra_headers password
+  base_url=${TRANSFER_BASE_URL:-https://transfer.sh}
   zmodload zsh/zutil
-  zparseopts -F -E -D - -days:=days -times:=dl d:=days t:=dl q+=silent s+=silent h=help -help=help || return 1
+  zparseopts -F -E -D - -days:=days -times:=dl d:=days t:=dl q+=silent s+=silent p:=password -password:=password e=secure -encrypt=secure h=help -help=help || return 1
 
   if [[ ${#help} -gt 0 ]]; then
     show_help
     return 1
   fi
 
+  transformer="cat"
 
   days=${days[-1]}
   dl=${dl[-1]}
@@ -28,6 +34,16 @@ transfer(){
       echo "Limit to $dl downloads"
     fi
     extra_headers="${extra_headers} -H 'Max-Downloads: $dl'"
+  fi
+
+  if [[ ${#password} -gt 0 || ${#secure} -gt 0 ]]; then
+    if [[ "${#password}" -eq 0 ]]; then
+      password=$(openssl rand -base64 24)
+    else
+      password=${password[-1]}
+    fi
+    transformer="gpg --symmetric --batch --yes -o- --passphrase $password"
+    password_url_hash="#$password"
   fi
 
   if [[ -n $days && $days -ne 0 ]]; then
@@ -61,24 +77,30 @@ transfer(){
     fi
     if [ -d "$file" ]; then
       file_name="$file_name.zip"
-      url=$( (cd "$file" && zip -r -q - .)|eval $base_curl "${base_url}/$file_name"|tee /dev/null)
+      url=$( (cd "$file" && zip -r -q - .)|eval $transformer|eval $base_curl "${base_url}/$file_name"|tee /dev/null)
     else
-      url=$(cat "$file"|eval $base_curl "${base_url}/$file_name"|tee /dev/null)
+      url=$(cat "$file"|eval $transformer|eval $base_curl "${base_url}/$file_name"|tee /dev/null)
     fi
   else
     file_name=$1
     original_file_name='<cat>'
-    url=$(eval $base_curl "${base_url}/$file_name"|tee /dev/null)
+    url=$(eval $transformer | eval $base_curl "${base_url}/$file_name"|tee /dev/null)
   fi
   if [[ $url =~ "https://" ]]; then
     if [[ ${#silent} -gt 0 ]]; then
-      echo -n $url
+      echo -n $url$password_url_hash
     else
       echo "Web URL:        $url"
       echo "Download URL:   ${url/$base_url\//$base_url/get/}"
       echo "Show URL:       ${url/$base_url\//$base_url/inline/}"
       delete_url=$(cat $headers | grep --color=never -i 'x-url-delete:' | sed 's/x-url-delete: //')
       delete_url="${delete_url//$'\r'}"
+      if [[ ${#password} -gt 0 ]]; then
+        echo "---------------------"
+        echo "Password (gpg): ${password}"
+        echo "Download (gpg): curl ${url/$base_url\//$base_url/get/} | gpg --batch --yes --decrypt --passphrase $password -o $file_name"
+        echo "---------------------"
+      fi
       echo "Delete URL:     $delete_url"
       echo "Delete command: curl -X DELETE $delete_url"
     fi
