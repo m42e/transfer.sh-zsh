@@ -1,0 +1,95 @@
+#! /usr/bin/env zsh
+show_help(){
+  echo "Usage of transfer"
+  echo "--times/-t <n>    limit to n downloads"
+  echo "--days/-d <n>     limit to n days"
+  echo "-q/-s             only print download url to stdout, "
+  echo "                  use -qq/-ss to disable progress"
+}
+transfer(){
+  local base_url headers extra_headers
+  base_url=https://transfer.sh
+  zmodload zsh/zutil
+  zparseopts -F -E -D - -days:=days -times:=dl d:=days t:=dl q+=silent s+=silent h=help -help=help || return 1
+
+  if [[ ${#help} -gt 0 ]]; then
+    show_help
+    return 1
+  fi
+
+
+  days=${days[-1]}
+  dl=${dl[-1]}
+
+  extra_headers=
+
+  if [[ -n $dl && $dl -ne 0 ]]; then
+    if [[ ${#silent} -eq 0 ]]; then
+      echo "Limit to $dl downloads"
+    fi
+    extra_headers="${extra_headers} -H 'Max-Downloads: $dl'"
+  fi
+
+  if [[ -n $days && $days -ne 0 ]]; then
+    if [[ ${#silent} -eq 0 ]]; then
+      echo "Limit availability to $days days"
+    fi
+    extra_headers="${extra_headers} -H 'Max-Days: $days'"
+  fi
+
+  if [ $# -eq 0 ];then
+    echo "No arguments specified.\nUsage:\n transfer <file|directory>\n ... | transfer <file_name>">&2
+    return 1
+  fi
+  headers=$(mktemp -t transfer-header.XXXXXXX)
+
+  base_curl="curl ${extra_headers} -D $headers"
+  if [[ ${#silent} -lt 2 ]]; then
+    base_curl="$base_curl --progress-bar"
+  else
+    base_curl="$base_curl -s"
+  fi
+  base_curl="$base_curl --upload-file -"
+
+  if tty -s; then
+    file="$1"
+    file_name=$(basename "$file")
+    original_file_name=$file_name
+    if [ ! -e "$file" ]; then
+      echo "$file: No such file or directory">&2
+      return 1
+    fi
+    if [ -d "$file" ]; then
+      file_name="$file_name.zip"
+      url=$( (cd "$file" && zip -r -q - .)|eval $base_curl "${base_url}/$file_name"|tee /dev/null)
+    else
+      url=$(cat "$file"|eval $base_curl "${base_url}/$file_name"|tee /dev/null)
+    fi
+  else
+    file_name=$1
+    original_file_name='<cat>'
+    url=$(eval $base_curl "${base_url}/$file_name"|tee /dev/null)
+  fi
+  if [[ $url =~ "https://" ]]; then
+    if [[ ${#silent} -gt 0 ]]; then
+      echo -n $url
+    else
+      echo "Web URL:        $url"
+      echo "Download URL:   ${url/$base_url\//$base_url/get/}"
+      echo "Show URL:       ${url/$base_url\//$base_url/inline/}"
+      delete_url=$(cat $headers | grep --color=never -i 'x-url-delete:' | sed 's/x-url-delete: //')
+      delete_url="${delete_url//$'\r'}"
+      echo "Delete URL:     $delete_url"
+      echo "Delete command: curl -X DELETE $delete_url"
+    fi
+    mkdir -p ~/.local/share/transfer/
+    touch ~/.local/share/transfer/uploads.txt
+    echo "$(pwd):$original_file_name:$url:$delete_url:$days:$dl" >> ~/.local/share/transfer/uploads.txt
+  elif [[ $url =~ 'virus' ]]; then
+    echo "Clamav scan found a virus in the file(s) you tried to upload."
+  else
+    cat $headers
+  fi
+  rm $headers
+}
+
