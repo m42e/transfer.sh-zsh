@@ -11,24 +11,33 @@ show_help(){
   echo "-q/-s             only print download url to stdout, "
   echo "                  use -qq/-ss to disable progress"
 }
+
 transfer(){
   local base_url headers extra_headers password
   base_url=${TRANSFER_BASE_URL:-https://transfer.sh}
-  zmodload zsh/zutil
-  zparseopts -F -E -D - -days:=days -times:=dl d:=days t:=dl q+=silent s+=silent p:=password -password:=password e=secure -encrypt=secure h=help -help=help || return 1
 
-  if [[ ${#help} -gt 0 ]]; then
+  zmodload zsh/zutil
+  zparseopts -F -E -D \
+    - \
+    -days:=days d:=days \
+    -times:=dl t:=dl \
+    q+=silent s+=silent \
+    p:=password -password:=password \
+    e=secure -encrypt=secure \
+    h=help -help=help \
+    || return 1
+
+  if [[ ${#help} -gt 0 || $# -eq 0 ]]; then
     show_help
     return 1
   fi
 
   transformer="cat"
-
   days=${days[-1]}
   dl=${dl[-1]}
-
   extra_headers=
 
+  # Check limits
   if [[ -n $dl && $dl -ne 0 ]]; then
     if [[ ${#silent} -eq 0 ]]; then
       echo "Limit to $dl downloads"
@@ -36,6 +45,14 @@ transfer(){
     extra_headers="${extra_headers} -H 'Max-Downloads: $dl'"
   fi
 
+  if [[ -n $days && $days -ne 0 ]]; then
+    if [[ ${#silent} -eq 0 ]]; then
+      echo "Limit availability to $days days"
+    fi
+    extra_headers="${extra_headers} -H 'Max-Days: $days'"
+  fi
+
+  # Encryption
   if [[ ${#password} -gt 0 || ${#secure} -gt 0 ]]; then
     if [[ "${#password}" -eq 0 ]]; then
       password=$(openssl rand -base64 24)
@@ -46,19 +63,10 @@ transfer(){
     password_url_hash="#$password"
   fi
 
-  if [[ -n $days && $days -ne 0 ]]; then
-    if [[ ${#silent} -eq 0 ]]; then
-      echo "Limit availability to $days days"
-    fi
-    extra_headers="${extra_headers} -H 'Max-Days: $days'"
-  fi
-
-  if [ $# -eq 0 ];then
-    echo "No arguments specified.\nUsage:\n transfer <file|directory>\n ... | transfer <file_name>">&2
-    return 1
-  fi
+  # create temporary file for header
   headers=$(mktemp -t transfer-header.XXXXXXX)
 
+  # Build the curl command
   base_curl="curl ${extra_headers} -D $headers"
   if [[ ${#silent} -lt 2 ]]; then
     base_curl="$base_curl --progress-bar"
@@ -76,18 +84,22 @@ transfer(){
       return 1
     fi
     if [ -d "$file" ]; then
+      # upload a directory
       file_name="$file_name.zip"
-      url=$( (cd "$file" && zip -r -q - .)|eval $transformer|eval $base_curl "${base_url}/$file_name"|tee /dev/null)
+      url=$( (cd "$file" && zip -r -q - .) | eval $transformer | eval $base_curl "${base_url}/$file_name" | tee /dev/null)
     else
-      url=$(cat "$file"|eval $transformer|eval $base_curl "${base_url}/$file_name"|tee /dev/null)
+      url=$(cat "$file" | eval $transformer | eval $base_curl "${base_url}/$file_name" | tee /dev/null)
     fi
   else
+    # 'cat'-ing to transfer
     file_name=$1
     original_file_name='<cat>'
-    url=$(eval $transformer | eval $base_curl "${base_url}/$file_name"|tee /dev/null)
+    url=$(eval $transformer | eval $base_curl "${base_url}/$file_name" | tee /dev/null)
   fi
   if [[ $url =~ "https://" ]]; then
+    # if we get an url returned
     if [[ ${#silent} -gt 0 ]]; then
+      #include the password in the url, if this is our only output
       echo -n $url$password_url_hash
     else
       echo "Web URL:        $url"
@@ -96,6 +108,7 @@ transfer(){
       delete_url=$(cat $headers | grep --color=never -i 'x-url-delete:' | sed 's/x-url-delete: //')
       delete_url="${delete_url//$'\r'}"
       if [[ ${#password} -gt 0 ]]; then
+        # In case a password has been set, we show it here again
         echo "---------------------"
         echo "Password (gpg): ${password}"
         echo "Download (gpg): curl ${url/$base_url\//$base_url/get/} | gpg --batch --yes --decrypt --passphrase $password -o $file_name"
@@ -108,9 +121,14 @@ transfer(){
     touch ~/.local/share/transfer/uploads.txt
     echo "$(pwd):$original_file_name:$url:$delete_url:$days:$dl" >> ~/.local/share/transfer/uploads.txt
   elif [[ $url =~ 'virus' ]]; then
+    # Seems the server detected a virus
     echo "Clamav scan found a virus in the file(s) you tried to upload."
   else
+    # Neither an url, nor a virus report, so we dump the answer and the headers
+    echo $url
+    echo "---- 8< -- Headers --"
     cat $headers
+    echo "---- >8 -- ------- --"
   fi
   rm $headers
 }
