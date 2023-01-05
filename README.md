@@ -1,5 +1,7 @@
 # Advanced transfer.sh script for ZSH
 
+For [transfer.sh](https://github.com/dutchcoders/transfer.sh)
+
 # Usage
 
 ```
