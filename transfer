@@ -20,6 +20,25 @@ show_help(){
   echo "                         specified, default is cat"
 }
 
+
+rawurlencode() {
+  # Thanks to https://stackoverflow.com/a/10660730
+  local string="$*"
+  local strlen=${#string}
+  local encoded=""
+  local pos c o
+
+  for (( pos=0 ; pos<strlen ; pos++ )); do
+     c=${string:$pos:1}
+     case "$c" in
+        [-_.~a-zA-Z0-9] ) o="${c}" ;;
+        * )               printf -v o '%%%02x' "'$c"
+     esac
+     encoded+="${o}"
+  done
+  REPLY="${encoded}"
+}
+
 transfer(){
   local base_url headers extra_headers password
   base_url=${TRANSFER_BASE_URL:-https://transfer.sh}
@@ -94,7 +113,9 @@ transfer(){
 
   if tty -s; then
     file="$1"
-    file_name=$(basename "$file")
+
+    rawurlencode $(basename "$file")
+    file_name=$REPLY
     original_file_name=$file_name
     if [ ! -e "$file" ]; then
       echo "$file: No such file or directory">&2
