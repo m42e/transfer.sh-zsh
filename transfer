@@ -4,13 +4,15 @@ show_help(){
   echo
   echo "transfer [-t <n>] [-d <d>] [-p <s>|-e] <filename/folder>"
   echo
-  echo "--times/-t <n>      limit to n downloads"
-  echo "--days/-d <n>       limit to n days"
-  echo "--recipient/-r <s> encrypt for recipient"
-  echo "--password/-p <s>   encrypt using gpg and the specified password"
-  echo "--encrypt/-e        encrypt using gpg and a generated password"
-  echo "-q/-s               only print download url to stdout, "
-  echo "                    use -qq/-ss to disable progress"
+  echo "--times/-t <n>       limit to n downloads"
+  echo "--days/-d <n>        limit to n days"
+  echo "--recipient/-r <s>   encrypt for recipient"
+  echo "--password/-p <s>    encrypt using gpg and the specified password"
+  echo "--encrypt/-e         encrypt using gpg and a generated password"
+  echo "--serverencrypt/-j   encrypt using server side encryption"
+  echo "-q/-s                only print download url to stdout, "
+  echo "                     use -qq/-ss to disable progress"
+  echo "-v                   print extended debug information"
   echo
   echo "Environment:"
   echo " - TRANSFER_BASE_URL     The baseurl of the transfer server, "
@@ -20,6 +22,12 @@ show_help(){
   echo "                         specified, default is cat"
 }
 
+local TRACE=10
+local DEBUG=20
+local INFO=30
+local WARNING=40
+local ERROR=50
+local log_level=$INFO
 
 rawurlencode() {
   # Thanks to https://stackoverflow.com/a/10660730
@@ -39,7 +47,35 @@ rawurlencode() {
   REPLY="${encoded}"
 }
 
-transfer(){
+dolog() {
+  local origlevel=${1:-INFO}
+  if [[ $origlevel =~ '[0-9]+' ]]; then
+    level=$origlevel
+  else
+    level=${(P)origlevel}
+  fi
+  shift
+  local message=$*
+
+  if [ $level -ge $log_level ]; then
+    printf "[%s]: % 8s: %s: %s\n" "$(date +"%Y%m%d-%H%M%S")" "$origlevel" "${funcstack[@]:1:1}" "$message" >&2
+  fi
+}
+
+checkloglevel(){
+  local origlevel=${1:-INFO}
+  if [[ $origlevel =~ '[0-9]+' ]]; then
+    level=$origlevel
+  else
+    level=${(P)origlevel}
+  fi
+  if [ $level -ge $log_level ]; then
+    return 0
+  fi
+  return 1
+}
+
+transfer() {
   local base_url headers extra_headers password
   base_url=${TRANSFER_BASE_URL:-https://transfer.sh}
 
@@ -48,55 +84,92 @@ transfer(){
     - \
     -days:=days d:=days \
     -times:=dl t:=dl \
+    -passwordlength:=password_length l:=password_length \
     q+=silent s+=silent \
+    v+=verbose \
     p:=password -password:=password \
     e=secure -encrypt=secure \
+    j=serversecure -serverencrypt=serversecure \
     r+:=recipient -recipient+:=recipient \
     h=help -help=help \
-    || return 1
+    || (dolog ERROR "parameter issue" && return -1)
 
   if [[ ${#help} -gt 0 || $# -eq 0 ]]; then
     show_help
     return 1
   fi
 
-  # Transformer is used to probably encrypt the content before uploading the file
+  if [[ ${#silent} -gt 0 ]]; then
+    log_level=$(($INFO+${#silent}*10))
+  elif [[ ${#verbose} -gt 0 ]]; then
+    log_level=$(($INFO-${#verbose}*10))
+  fi
+
+  if [[ ${#password_length} -gt 0 ]]; then
+    password_length=${password_length[-1]}
+  else
+    password_length=24
+  fi
   transformer=${TRANSFER_TRANSFORMER:-"cat"}
   days=${days[-1]}
   dl=${dl[-1]}
+
+  dolog TRACE "base_url:        ${base_url}"
+  dolog TRACE "days:            ${days:-not set}"
+  dolog TRACE "times:           ${dl:-not set}"
+  dolog TRACE "password:        ${password:-not set}"
+  dolog TRACE "password length: ${password_length:-not set}"
+  dolog TRACE "secure:          ${secure:-not set}"
+  dolog TRACE "serversecure:    ${serversecure:-not set}"
+  dolog TRACE "recipient        ${recipient:-not set}"
+
+  # Transformer is used to probably encrypt the content before uploading the file
   extra_headers=
 
   # Check limits
   if [[ -n $dl && $dl -ne 0 ]]; then
-    if [[ ${#silent} -eq 0 ]]; then
-      echo "Limit to $dl downloads"
-    fi
+    dolog INFO "Limit to $dl downloads"
     extra_headers="${extra_headers} -H 'Max-Downloads: $dl'"
   fi
 
   if [[ -n $days && $days -ne 0 ]]; then
-    if [[ ${#silent} -eq 0 ]]; then
-      echo "Limit availability to $days days"
-    fi
+    dolog INFO "Limit availability to $days days"
     extra_headers="${extra_headers} -H 'Max-Days: $days'"
   fi
 
   # Encryption
   if [[ ${#recipient} -gt 0 ]]; then
+    dolog INFO "Using local gpg encryption"
     transformer="gpg --batch --yes -o- --encrypt "
     for ((i=2; i<=${#recipient[@]}; i+=2)); do
       rec=${recipient[$i]}
       transformer="$transformer --recipient $rec"
     done
   elif [[ ${#password} -gt 0 || ${#secure} -gt 0 ]]; then
+    dolog INFO "Using local gpg password encryption"
     # If we do not have a password, lets generate one.
     if [[ "${#password}" -eq 0 ]]; then
-      password=$(openssl rand -base64 24)
+      dolog INFO "Generating random password"
+      password=$(openssl rand -base64 ${password_length:-24})
     else
       password=${password[-1]}
     fi
+    password_type="gpg"
     transformer="gpg --symmetric --batch --yes -o- --passphrase $password"
     password_url_hash="#$password"
+    decryption="curl %s | gpg --batch --yes --decrypt --passphrase $password -o %s"
+  elif [[ ${#password} -gt 0 || ${#serversecure} -gt 0 ]]; then
+    dolog INFO "Using server side encryption"
+    # If we do not have a password, lets generate one.
+    if [[ "${#password}" -eq 0 ]]; then
+      dolog INFO "Generating random password"
+      password=$(openssl rand -base64 ${password_length:-24})
+    else
+      password=${password[-1]}
+    fi
+    password_type="Server Side Encryption"
+    extra_headers="${extra_headers} -H 'X-Encrypt-Password: $password'"
+    decryption="curl -H 'X-Decrypt-Password: $password' %s -o %s"
   fi
 
   # create temporary file for header
@@ -104,7 +177,7 @@ transfer(){
 
   # Build the curl command
   base_curl="curl ${extra_headers} -D $headers"
-  if [[ ${#silent} -lt 2 ]]; then
+  if $(checkloglevel WARNING); then
     base_curl="$base_curl --progress-bar"
   else
     base_curl="$base_curl -s"
@@ -118,64 +191,68 @@ transfer(){
     file_name=$REPLY
     original_file_name=$file_name
     if [ ! -e "$file" ]; then
-      echo "$file: No such file or directory">&2
+      dolog ERROR "$file: No such file or directory">&2
       return 1
     fi
     if [ -d "$file" ]; then
-      # upload a directory
       file_name="$file_name.zip"
+      dolog DEBUG "command (cd $file && zip -r -q - .) | eval $transformer | eval $base_curl ${base_url}/$file_name"
       url=$( (cd "$file" && zip -r -q - .) | eval $transformer | eval $base_curl "${base_url}/$file_name" | tee /dev/null)
     else
+      dolog DEBUG "command cat $file | eval $transformer | eval $base_curl ${base_url}/$file_name"
       url=$(cat "$file" | eval $transformer | eval $base_curl "${base_url}/$file_name" | tee /dev/null)
     fi
   else
     # 'cat'-ing to transfer
     file_name=$1
     original_file_name='<cat>'
+    dolog DEBUG "Receiving from pipe"
+    dolog DEBUG "command eval $transformer | eval $base_curl ${base_url}/$file_name"
     url=$(eval $transformer | eval $base_curl "${base_url}/$file_name" | tee /dev/null)
   fi
   if [[ $url =~ "https://" ]]; then
     # if we get an url returned
-    if [[ ${#silent} -gt 0 ]]; then
-      #include the password in the url, if this is our only output
-      echo -n $url$password_url_hash
-    else
-      echo "Web URL:        $url"
-      echo "Download URL:   ${url/$base_url\//$base_url/get/}"
-      echo "Show URL:       ${url/$base_url\//$base_url/inline/}"
-      delete_url=$(cat $headers | grep --color=never -i 'x-url-delete:' | sed 's/x-url-delete: //')
-      delete_url="${delete_url//$'\r'}"
+    delete_url=$(cat $headers | grep --color=never -i 'x-url-delete:' | sed 's/x-url-delete: //')
+    delete_url="${delete_url//$'\r'}"
+    if $(checkloglevel INFO); then
+      printf "Web URL:        %s\n" "$url"
+      printf "Download URL:   %s\n" "${url/$base_url\//$base_url/get/}"
+      printf "Show URL:       %s\n" "${url/$base_url\//$base_url/inline/}"
       if [[ ${#password} -gt 0 ]]; then
         # In case a password has been set, we show it here again
-        echo "---------------------"
-        echo "Password (gpg): ${password}"
-        echo "Download (gpg): curl ${url/$base_url\//$base_url/get/} | gpg --batch --yes --decrypt --passphrase $password -o $file_name"
-        echo "---------------------"
+        print "*********************"
+        printf "Password (%s): %s\n" "${password_type}" "${password}"
+        printf "Download (%s): %s\n" "${password_type}" "$(printf ${decryption} "${url/$base_url\//$base_url/get/}" "${file_name}")"
+        print "*********************"
       fi
       if [[ ${#recipient} -gt 0 ]]; then
-        echo "---------------------"
-        echo "Encrypted for: "
+        print "*********************"
+        print "Encrypted for:"
         for ((i=2; i<=${#recipient[@]}; i+=2)); do
-          echo " - ${recipient[$i]}"
+          printf " - %s\n" "${recipient[$i]}"
         done
-        echo "---------------------"
+        print "*********************"
       fi
-      echo "Delete URL:     $delete_url"
-      echo "Delete command: curl -X DELETE $delete_url"
+      printf "Delete URL:     %s\n" "$delete_url"
+      printf "Delete command: curl -X DELETE %s\n" "$delete_url"
+    else
+      #include the password in the url, if this is our only output
+      echo -n $url$password_url_hash
     fi
     mkdir -p ~/.local/share/transfer/
     touch ~/.local/share/transfer/uploads.txt
-    echo "$(pwd):$original_file_name:$url:$delete_url:$days:$dl" >> ~/.local/share/transfer/uploads.txt
+    echo "$(pwd)|$original_file_name|$url|$delete_url|$days|$dl" >> ~/.local/share/transfer/uploads.txt
   elif [[ $url =~ 'virus' ]]; then
     # Seems the server detected a virus
     echo "Clamav scan found a virus in the file(s) you tried to upload."
   else
     # Neither an url, nor a virus report, so we dump the answer and the headers
     echo $url
-    echo "---- 8< -- Headers --"
+    echo "**** 8< -- Headers --"
     cat $headers
-    echo "---- >8 -- ------- --"
+    echo "**** >8 -- ******* --"
   fi
   rm $headers
 }
 
+transfer $*
