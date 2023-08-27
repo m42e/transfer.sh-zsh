@@ -2,6 +2,13 @@
 
 For [transfer.sh](https://github.com/dutchcoders/transfer.sh)
 
+Requires:
+
+- cat
+- curl
+- zip
+- gpg (for local encryption if you like)
+
 # Usage
 
 ```

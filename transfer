@@ -1,4 +1,5 @@
 #! /usr/bin/env zsh
+autoload is-at-least
 show_help(){
   echo "Usage of transfer"
   echo
@@ -80,7 +81,11 @@ transfer() {
   base_url=${TRANSFER_BASE_URL:-https://transfer.sh}
 
   zmodload zsh/zutil
-  zparseopts -F -E -D \
+  extraopt=
+  if is-at-least 5.8;then
+    extraopt=' -F'
+  fi
+  zparseopts $extraopt -E -D \
     - \
     -days:=days d:=days \
     -times:=dl t:=dl \
